@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator
+from urllib.parse import urlsplit
 
 import aiohttp
 from fastapi import HTTPException
@@ -42,7 +43,20 @@ OLLAMA_LIBRARY_MODELS = _build_ollama_library_models()
 
 
 def _get_ollama_url(ollama_url: str | None = None) -> str:
-    return (ollama_url or get_ollama_url_env() or "http://localhost:11434").rstrip("/")
+    raw_url = (ollama_url or get_ollama_url_env() or "http://localhost:11434").strip()
+    if not raw_url:
+        raw_url = "http://localhost:11434"
+    if "://" not in raw_url:
+        raw_url = f"http://{raw_url}"
+
+    split_result = urlsplit(raw_url)
+    if split_result.scheme not in {"http", "https"} or not split_result.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Ollama URL. Use a valid http:// or https:// URL.",
+        )
+
+    return raw_url.rstrip("/")
 
 
 def _ollama_unreachable_error(ollama_url: str | None = None) -> HTTPException:
@@ -54,6 +68,13 @@ def _ollama_unreachable_error(ollama_url: str | None = None) -> HTTPException:
             "Make sure Ollama is running and reachable from Presenton. "
             "When Presenton runs in Docker, use host.docker.internal instead of localhost."
         ),
+    )
+
+
+def _ollama_bad_response_error(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail=f"Ollama returned an unexpected response: {message}",
     )
 
 
@@ -84,22 +105,48 @@ async def list_available_ollama_models(
                 f"{_get_ollama_url(ollama_url)}/api/tags",
             ) as response:
                 if response.status == 200:
-                    pulled_models = await response.json()
-                    return [
-                        OllamaModelStatus(
-                            name=m["model"],
-                            parameters=_extract_ollama_parameter_count(
-                                m["model"],
-                                m.get("details") if isinstance(m, dict) else None,
-                            )
-                            or None,
-                            size=m["size"],
-                            status="pulled",
-                            downloaded=m["size"],
-                            done=True,
+                    try:
+                        pulled_models = await response.json(content_type=None)
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError, ValueError) as error:
+                        raise _ollama_bad_response_error(
+                            "the /api/tags response was not valid JSON"
+                        ) from error
+
+                    models = (
+                        pulled_models.get("models")
+                        if isinstance(pulled_models, dict)
+                        else None
+                    )
+                    if not isinstance(models, list):
+                        raise _ollama_bad_response_error(
+                            "the /api/tags response did not include a models list"
                         )
-                        for m in pulled_models["models"]
-                    ]
+
+                    available_models: list[OllamaModelStatus] = []
+                    for model in models:
+                        if not isinstance(model, dict):
+                            continue
+                        name = model.get("model") or model.get("name")
+                        if not isinstance(name, str) or not name.strip():
+                            continue
+                        size = model.get("size") if isinstance(model.get("size"), int) else 0
+                        available_models.append(
+                            OllamaModelStatus(
+                                name=name,
+                                parameters=_extract_ollama_parameter_count(
+                                    name,
+                                    model.get("details")
+                                    if isinstance(model.get("details"), dict)
+                                    else None,
+                                )
+                                or None,
+                                size=size,
+                                status="pulled",
+                                downloaded=size,
+                                done=True,
+                            )
+                        )
+                    return available_models
                 elif response.status == 403:
                     raise HTTPException(
                         status_code=403,
@@ -110,7 +157,7 @@ async def list_available_ollama_models(
                         status_code=response.status,
                         detail=f"Failed to list Ollama models: {response.status}",
                     )
-    except (aiohttp.ClientError, TimeoutError) as error:
+    except (aiohttp.ClientError, TimeoutError, OSError) as error:
         raise _ollama_unreachable_error(ollama_url) from error
 
 
@@ -137,7 +184,7 @@ async def pull_ollama_model(
                     return
 
                 async for line in response.content:
-                    decoded = line.decode("utf-8").strip()
+                    decoded = line.decode("utf-8", errors="replace").strip()
                     if not decoded:
                         continue
                     try:
@@ -168,6 +215,8 @@ async def pull_ollama_model(
                             f"event: response\ndata: "
                             f"{json.dumps({'type': 'status', 'status': status})}\n\n"
                         )
-    except (aiohttp.ClientError, TimeoutError) as error:
+    except HTTPException as error:
+        yield f"event: error\ndata: {json.dumps({'detail': error.detail})}\n\n"
+    except (aiohttp.ClientError, TimeoutError, OSError) as error:
         LOGGER.error("Ollama pull error: %s", error)
         yield f"event: error\ndata: {json.dumps({'detail': f'Could not connect to Ollama at {base_url}'})}\n\n"

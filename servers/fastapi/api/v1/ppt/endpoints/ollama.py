@@ -29,6 +29,7 @@ async def get_library_models():
 
 @OLLAMA_ROUTER.post("/models/pull")
 async def pull_model(model_name: str, ollama_url: str | None = None):
+    await list_available_ollama_models(ollama_url)
     return StreamingResponse(
         pull_ollama_model(model_name, ollama_url),
         media_type="text/event-stream",

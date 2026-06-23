@@ -1,5 +1,6 @@
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 from openai import APIError as OpenAIAPIError
@@ -84,7 +85,26 @@ def normalize_openai_compatible_base_url(url: str) -> str:
     """Ensure base URL targets the OpenAI-compatible /v1 root (LiteLLM, vLLM, etc.)."""
     u = (url or "").strip().rstrip("/")
     if not u:
-        return u
+        raise ModelAvailabilityError(
+            "OpenAI-compatible provider",
+            "Provider URL is required.",
+            provider_status_code=400,
+        )
+    if any(ord(character) < 32 for character in u):
+        raise ModelAvailabilityError(
+            "OpenAI-compatible provider",
+            "Provider URL contains invalid control characters.",
+            provider_status_code=400,
+        )
+    if "://" not in u:
+        u = f"http://{u}"
+    split_result = urlsplit(u)
+    if split_result.scheme not in {"http", "https"} or not split_result.netloc:
+        raise ModelAvailabilityError(
+            "OpenAI-compatible provider",
+            "Provider URL must be a valid http:// or https:// URL.",
+            provider_status_code=400,
+        )
     if u.endswith("/v1"):
         return u
     base = u.split("?", 1)[0]

@@ -46,7 +46,7 @@ from models.sql.slide import SlideModel
 from models.sql.presentation_layout_code import PresentationLayoutCodeModel
 from models.sse_response import SSECompleteResponse, SSEErrorResponse, SSEResponse
 
-from services.database import get_async_session
+from services.database import async_session_maker, get_async_session
 from services.concurrent_service import CONCURRENT_SERVICE
 from models.sql.presentation import PresentationModel
 from models.sql.async_presentation_generation_status import (
@@ -81,6 +81,7 @@ from utils.simple_auth import (
     get_session_token_from_request,
 )
 from utils.web_search import get_selected_web_search_provider, get_web_search_route
+from utils.sse_stream import stream_with_terminal_errors
 from models.presentation_layout import PresentationLayoutModel
 import uuid
 
@@ -385,10 +386,10 @@ async def prepare_presentation(
 
 
 @PRESENTATION_ROUTER.get("/stream/{id}", response_model=PresentationWithSlides)
-async def stream_presentation(
-    id: uuid.UUID, sql_session: AsyncSession = Depends(get_async_session)
-):
-    presentation = await sql_session.get(PresentationModel, id)
+async def stream_presentation(id: uuid.UUID):
+    async with async_session_maker() as sql_session:
+        presentation = await sql_session.get(PresentationModel, id)
+
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
     if not presentation.structure:
@@ -402,13 +403,50 @@ async def stream_presentation(
             detail="Outlines can not be empty",
         )
 
+    try:
+        structure = presentation.get_structure()
+        layout = presentation.get_layout()
+        outline = presentation.get_presentation_outline()
+    except Exception as error:
+        logger.exception(
+            "[presentation.stream] invalid persisted presentation data id=%s", id
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Presentation data is invalid. Please prepare the presentation again.",
+        ) from error
+
+    if not structure or not outline or not outline.slides:
+        raise HTTPException(
+            status_code=400,
+            detail="Presentation data is incomplete. Please prepare the presentation again.",
+        )
+
+    if len(structure.slides) < len(outline.slides):
+        raise HTTPException(
+            status_code=400,
+            detail="Presentation structure has fewer slides than the outline.",
+        )
+
+    total_layouts = len(layout.slides)
+    if total_layouts == 0:
+        raise HTTPException(status_code=400, detail="Presentation layout has no slides.")
+
+    invalid_layout_indexes = [
+        index
+        for index in structure.slides[: len(outline.slides)]
+        if index < 0 or index >= total_layouts
+    ]
+    if invalid_layout_indexes:
+        raise HTTPException(
+            status_code=400,
+            detail="Presentation structure references an unavailable slide layout.",
+        )
+
     image_generation_service = ImageGenerationService(get_images_directory())
 
     async def inner():
-        structure = presentation.get_structure()
-        layout = presentation.get_layout()
         icon_weight = layout.icon_weight
-        outline = presentation.get_presentation_outline()
         image_urls_for_slides = get_images_for_slides_from_outline(outline.slides)
 
         async_assets_generation_tasks: List[asyncio.Task] = []
@@ -418,6 +456,18 @@ async def stream_presentation(
         async def notify_slide_assets_ready(slide_index: int, asset_task: asyncio.Task):
             try:
                 await asset_task
+            except Exception as error:
+                logger.exception(
+                    "[presentation.stream] asset generation failed id=%s slide_index=%s",
+                    id,
+                    slide_index,
+                )
+                asset_warnings_by_slide.setdefault(slide_index, []).append(
+                    {
+                        "type": "asset_generation_failed",
+                        "message": str(error),
+                    }
+                )
             finally:
                 await asset_events.put(slide_index)
 
@@ -519,34 +569,53 @@ async def stream_presentation(
                 ),
             ).to_string()
 
-        generated_assets_lists = await asyncio.gather(*async_assets_generation_tasks)
+        generated_assets_lists = await asyncio.gather(
+            *async_assets_generation_tasks,
+            return_exceptions=True,
+        )
         generated_assets = []
         for assets_list in generated_assets_lists:
+            if isinstance(assets_list, Exception):
+                continue
             generated_assets.extend(assets_list)
 
-        # Moved this here to make sure new slides are generated before deleting the old ones
-        await sql_session.execute(
-            delete(SlideModel).where(SlideModel.presentation == id)
-        )
-        await sql_session.commit()
+        async with async_session_maker() as update_session:
+            db_presentation = await update_session.get(PresentationModel, id)
+            if not db_presentation:
+                yield SSEErrorResponse(detail="Presentation not found").to_string()
+                return
 
-        sql_session.add(presentation)
-        sql_session.add_all(slides)
-        sql_session.add_all(generated_assets)
-        await sql_session.commit()
+            # Make sure new slides are generated before deleting the old ones.
+            await update_session.execute(
+                delete(SlideModel).where(SlideModel.presentation == id)
+            )
+            update_session.add_all(slides)
+            update_session.add_all(generated_assets)
+            await update_session.commit()
 
-        response = PresentationWithSlides(
-            **presentation.model_dump(),
-            slides=slides,
-            fonts=await _resolve_presentation_fonts(presentation, slides, sql_session),
-        )
+            response = PresentationWithSlides(
+                **db_presentation.model_dump(),
+                slides=slides,
+                fonts=await _resolve_presentation_fonts(
+                    db_presentation,
+                    slides,
+                    update_session,
+                ),
+            )
 
         yield SSECompleteResponse(
             key="presentation",
             value=response.model_dump(mode="json"),
         ).to_string()
 
-    return StreamingResponse(inner(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_with_terminal_errors(
+            inner(),
+            logger,
+            context=f"presentation presentation_id={id}",
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @PRESENTATION_ROUTER.patch("/update", response_model=PresentationWithSlides)

@@ -17,7 +17,7 @@ from models.sse_response import (
     SSEStatusResponse,
 )
 from services.temp_file_service import TEMP_FILE_SERVICE
-from services.database import get_async_session
+from services.database import async_session_maker, get_async_session
 from services.documents_loader import DocumentsLoader
 from services.mem0_presentation_memory_service import (
     MEM0_PRESENTATION_MEMORY_SERVICE,
@@ -33,6 +33,7 @@ from utils.llm_calls.generate_presentation_outlines import (
     get_messages as get_outline_messages,
 )
 from utils.web_search import get_selected_web_search_provider, get_web_search_route
+from utils.sse_stream import stream_with_terminal_errors
 
 OUTLINES_ROUTER = APIRouter(prefix="/outlines", tags=["Outlines"])
 LOGGER = logging.getLogger(__name__)
@@ -79,10 +80,9 @@ async def update_outline(
 
 
 @OUTLINES_ROUTER.get("/stream/{id}")
-async def stream_outlines(
-    id: uuid.UUID, sql_session: AsyncSession = Depends(get_async_session)
-):
-    presentation = await sql_session.get(PresentationModel, id)
+async def stream_outlines(id: uuid.UUID):
+    async with async_session_maker() as sql_session:
+        presentation = await sql_session.get(PresentationModel, id)
 
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
@@ -225,24 +225,37 @@ async def stream_outlines(
                 :n_slides_to_generate
             ]
 
-        if presentation.n_slides <= 0:
-            presentation.n_slides = len(presentation_outlines.slides)
+        async with async_session_maker() as update_session:
+            db_presentation = await update_session.get(PresentationModel, id)
+            if not db_presentation:
+                yield SSEErrorResponse(detail="Presentation not found").to_string()
+                return
 
-        presentation.outlines = presentation_outlines.model_dump()
-        presentation.title = get_presentation_title_from_presentation_outline(
-            presentation_outlines
-        )
+            if db_presentation.n_slides <= 0:
+                db_presentation.n_slides = len(presentation_outlines.slides)
 
-        sql_session.add(presentation)
-        await sql_session.commit()
+            db_presentation.outlines = presentation_outlines.model_dump()
+            db_presentation.title = get_presentation_title_from_presentation_outline(
+                presentation_outlines
+            )
+
+            update_session.add(db_presentation)
+            await update_session.commit()
 
         await MEM0_PRESENTATION_MEMORY_SERVICE.store_generated_outlines(
-            presentation.id,
-            presentation.outlines,
+            id,
+            presentation_outlines.model_dump(mode="json"),
         )
 
         yield SSECompleteResponse(
-            key="presentation", value=presentation.model_dump(mode="json")
+            key="presentation", value=db_presentation.model_dump(mode="json")
         ).to_string()
 
-    return StreamingResponse(inner(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_with_terminal_errors(
+            inner(),
+            LOGGER,
+            context=f"outline presentation_id={id}",
+        ),
+        media_type="text/event-stream",
+    )
