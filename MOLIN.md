@@ -54,4 +54,27 @@
 **遗留**：slide/chat_history 表本身未加 user_id（经 presentation 间接隔离已足够）；如需
 防御纵深可后续补列。
 
-## F-C：鉴权改信任墨灵 SSO —— 待开发
+## F-C：鉴权改信任墨灵 SSO —— 已完成
+
+presenton 原为单管理员 session/basic 登录（`SessionAuthMiddleware`）。墨灵接入后，
+请求由墨灵 BFF 完成鉴权并注入身份，presenton **信任之、跳过原登录**；并加共享密钥防伪造。
+
+| 文件 | 改动 |
+|---|---|
+| `api/middlewares.py` | **改**：`SessionAuthMiddleware.dispatch` 在 `get_molin_identity()` 非空时跳过单管理员校验，放行并回写 `request.state.auth_username = user_id` |
+| `api/molin_middleware.py` | **改**：加 `MOLIN_TRUST_SECRET` 校验——配置后注入头须带匹配的 `X-Molin-Auth-Secret` 才被接受，否则视作普通请求（防伪造） |
+| `tests/unit/test_molin_auth.py` | **新增**：密钥校验 + 信任放行，3 项全过 |
+
+**安全模型（务必满足其一，建议都做）**：
+1. presenton 只在内网、仅墨灵 BFF 可达（网络隔离）；
+2. 配置环境变量 `MOLIN_TRUST_SECRET`，BFF 注入 `X-Molin-Auth-Secret` 匹配——
+   即使 presenton 意外可达也无法伪造身份绕过鉴权。
+
+未配置 `MOLIN_TRUST_SECRET` 且无墨灵头时，保持 presenton 原单管理员登录行为。
+
+## 环境变量（墨灵接入新增）
+
+| 变量 | 说明 |
+|---|---|
+| `MOLIN_TRUST_SECRET` | BFF↔presenton 共享密钥（F-C 防伪造）。不设则仅靠网络隔离 |
+| `CUSTOM_LLM_URL` | token_gateway OpenAI 兼容入口（F-A base_url 缺省值） |

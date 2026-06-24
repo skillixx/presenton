@@ -13,7 +13,15 @@ Starlette 的 ``BaseHTTPMiddleware`` 在独立的执行上下文里运行下游�
 - ``X-Molin-User-Id``：墨灵用户 ID（存在即视为墨灵请求）。
 - ``X-Molin-LLM-Key``：该用户在 token_gateway 的个人 key。
 - ``X-Molin-LLM-Base-Url``：token_gateway 入口（可选，缺省用 CUSTOM_LLM_URL）。
+- ``X-Molin-Auth-Secret``：BFF↔presenton 共享密钥（F-C 防伪造）。
+
+安全（F-C）：身份头一旦被接受，下游即信任并跳过 presenton 原登录校验，故必须确保
+**只有墨灵 BFF 能注入这些头**。两道防线：① presenton 只在内网、仅 BFF 可达；
+② 若配置了环境变量 ``MOLIN_TRUST_SECRET``，则注入头必须带匹配的 ``X-Molin-Auth-Secret``
+才被接受，否则视作普通请求（身份为 None，回落原鉴权）——可防 presenton 万一可达时的伪造。
 """
+
+import os
 
 from utils.molin_context import (
     MolinIdentity,
@@ -24,10 +32,23 @@ from utils.molin_context import (
 _HDR_USER = b"x-molin-user-id"
 _HDR_KEY = b"x-molin-llm-key"
 _HDR_BASE_URL = b"x-molin-llm-base-url"
+_HDR_SECRET = b"x-molin-auth-secret"
 
 
 def _decode(value: bytes | None) -> str | None:
     return value.decode("latin-1") if value else None
+
+
+def _trust_secret_ok(headers: dict) -> bool:
+    """校验 BFF↔presenton 共享密钥。
+
+    未配置 ``MOLIN_TRUST_SECRET`` 时返回 True（信任网络隔离，开发/独立部署友好）；
+    配置后则必须请求头匹配，否则拒绝接受墨灵身份。
+    """
+    expected = os.getenv("MOLIN_TRUST_SECRET")
+    if not expected:
+        return True
+    return _decode(headers.get(_HDR_SECRET)) == expected
 
 
 class MolinIdentityMiddleware:
@@ -44,7 +65,7 @@ class MolinIdentityMiddleware:
         user_id = headers.get(_HDR_USER)
 
         token = None
-        if user_id:
+        if user_id and _trust_secret_ok(headers):
             identity = MolinIdentity(
                 user_id=_decode(user_id),
                 llm_api_key=_decode(headers.get(_HDR_KEY)),

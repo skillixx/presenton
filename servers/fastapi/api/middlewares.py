@@ -3,6 +3,7 @@ from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from utils.get_env import get_can_change_keys_env, is_disable_auth_enabled
+from utils.molin_context import get_molin_identity
 from utils.simple_auth import (
     get_auth_status,
     get_basic_auth_credentials_from_request,
@@ -44,6 +45,14 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if is_disable_auth_enabled():
+            return await call_next(request)
+
+        # 墨灵接入（F-C）：请求已由墨灵 BFF 完成鉴权（并经 MOLIN_TRUST_SECRET 校验后）
+        # 注入身份，presenton 信任之，跳过原单管理员登录校验。身份由 MolinIdentityMiddleware
+        # 写入 ContextVar（其为最外层中间件，故此处必能读到）。
+        molin = get_molin_identity()
+        if molin is not None:
+            request.state.auth_username = molin.user_id
             return await call_next(request)
 
         path = request.url.path
