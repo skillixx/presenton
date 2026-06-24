@@ -21,6 +21,7 @@ from utils.get_env import (
     get_openai_compat_image_model_env,
 )
 from utils.get_env import get_pixabay_api_key_env
+from utils.molin_tenancy import stamp_owner
 from utils.get_env import get_comfyui_url_env
 from utils.get_env import get_comfyui_workflow_env
 from utils.image_provider import (
@@ -109,7 +110,7 @@ class ImageGenerationService:
                 if image_path.startswith("http"):
                     return image_path
                 elif os.path.exists(image_path):
-                    return ImageAsset(
+                    asset = ImageAsset(
                         path=image_path,
                         is_uploaded=False,
                         extras={
@@ -117,6 +118,8 @@ class ImageGenerationService:
                             "theme_prompt": prompt.theme_prompt,
                         },
                     )
+                    stamp_owner(asset)  # 墨灵多租户（F-B）：生成图片盖章归属
+                    return asset
                 elif image_path.startswith("/app_data/") or image_path.startswith(
                     "/static/"
                 ):

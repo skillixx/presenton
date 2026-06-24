@@ -8,6 +8,7 @@ from starlette.responses import FileResponse
 
 from api.lifespan import app_lifespan
 from api.middlewares import SessionAuthMiddleware, UserConfigEnvUpdateMiddleware
+from api.molin_middleware import MolinIdentityMiddleware
 from api.v1.auth.router import API_V1_AUTH_ROUTER
 from api.v1.mock.router import API_V1_MOCK_ROUTER
 from api.v1.ppt.router import API_V1_PPT_ROUTER
@@ -88,6 +89,9 @@ app.add_middleware(
 
 app.add_middleware(UserConfigEnvUpdateMiddleware)
 app.add_middleware(SessionAuthMiddleware)
+# 墨灵身份注入（F-A）：最后 add → 最外层 → 请求最先经过，确保 ContextVar 在
+# 鉴权/配置中间件与 endpoint 之前就绪。纯 ASGI 中间件以保证 ContextVar 正确传播。
+app.add_middleware(MolinIdentityMiddleware)
 
 
 @app.middleware("http")

@@ -48,6 +48,7 @@ from models.sse_response import SSECompleteResponse, SSEErrorResponse, SSERespon
 
 from services.database import get_async_session
 from services.concurrent_service import CONCURRENT_SERVICE
+from utils.molin_tenancy import current_owner_id, require_owner, stamp_owner
 from models.sql.presentation import PresentationModel
 from models.sql.async_presentation_generation_status import (
     AsyncPresentationGenerationTaskModel,
@@ -181,6 +182,10 @@ async def get_all_presentations(sql_session: AsyncSession = Depends(get_async_se
         )
         .order_by(PresentationModel.created_at.desc())
     )
+    # 墨灵多租户（F-B）：仅返回当前用户自己的演示文稿。
+    owner = current_owner_id()
+    if owner is not None:
+        query = query.where(PresentationModel.user_id == owner)
 
     results = await sql_session.execute(query)
     rows = results.all()
@@ -205,6 +210,7 @@ async def get_presentation(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(404, "Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
     slides_result = await sql_session.scalars(
         select(SlideModel)
         .where(SlideModel.presentation == id)
@@ -226,6 +232,7 @@ async def delete_presentation(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(404, "Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     await sql_session.delete(presentation)
     await sql_session.commit()
@@ -287,6 +294,7 @@ async def create_presentation(
         include_title_slide=include_title_slide,
         web_search=web_search,
     )
+    stamp_owner(presentation)  # 墨灵多租户（F-B）：盖章归属当前用户
 
     sql_session.add(presentation)
     await sql_session.commit()
@@ -323,6 +331,7 @@ async def prepare_presentation(
     presentation = await sql_session.get(PresentationModel, presentation_id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     presentation_outline_model = PresentationOutlineModel(slides=outlines)
 
@@ -395,6 +404,7 @@ async def stream_presentation(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
     if not presentation.structure:
         raise HTTPException(
             status_code=400,
@@ -565,6 +575,7 @@ async def update_presentation(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     presentation_update_dict = {}
     if n_slides is not None:
@@ -893,6 +904,7 @@ async def generate_presentation_handler(
             verbosity=request.verbosity.value,
             instructions=request.instructions,
         )
+        stamp_owner(presentation)  # 墨灵多租户（F-B）：API 生成流程盖章归属
 
         # Updating async status
         if async_status:
@@ -1133,6 +1145,7 @@ async def edit_presentation_with_new_content(
     presentation = await sql_session.get(PresentationModel, data.presentation_id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     slides = await sql_session.scalars(
         select(SlideModel).where(SlideModel.presentation == data.presentation_id)
@@ -1181,12 +1194,14 @@ async def derive_presentation_from_existing_one(
     presentation = await sql_session.get(PresentationModel, data.presentation_id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     slides = await sql_session.scalars(
         select(SlideModel).where(SlideModel.presentation == data.presentation_id)
     )
 
     new_presentation = presentation.get_new_presentation()
+    stamp_owner(new_presentation)  # 墨灵多租户（F-B）：派生副本归当前用户
     new_slides = []
     for each_slide in slides:
         updated_content = None

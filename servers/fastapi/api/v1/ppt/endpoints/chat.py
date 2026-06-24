@@ -19,11 +19,26 @@ from models.sse_response import (
     SSETraceResponse,
     SSEResponse,
 )
+from models.sql.presentation import PresentationModel
 from services.chat import ChatTurnResult, PresentationChatService
 from services.chat import sql_chat_history
 from services.database import get_async_session
+from utils.molin_tenancy import require_owner
 
 CHAT_ROUTER = APIRouter(prefix="/chat", tags=["Chat"])
+
+
+async def _require_owned_presentation(sql_session: AsyncSession, presentation_id):
+    """墨灵多租户（F-B）：对话历史按 presentation 归属隔离。
+
+    校验该 presentation 属于当前墨灵用户，非本人 / 不存在均视作 404，
+    避免越权读写他人的对话历史（即用户的「记忆」）。
+    """
+    presentation = await sql_session.get(PresentationModel, presentation_id)
+    if not presentation:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)
+    return presentation
 
 
 def _resolve_chat_mode(message: str) -> str:
@@ -37,6 +52,7 @@ async def list_chat_conversations(
     presentation_id: uuid.UUID = Query(..., description="Presentation id"),
     sql_session: AsyncSession = Depends(get_async_session),
 ):
+    await _require_owned_presentation(sql_session, presentation_id)
     raw = await sql_chat_history.list_conversations(
         sql_session, presentation_id=presentation_id
     )
@@ -56,6 +72,7 @@ async def get_chat_history(
     conversation_id: uuid.UUID = Query(..., description="Conversation thread id"),
     sql_session: AsyncSession = Depends(get_async_session),
 ):
+    await _require_owned_presentation(sql_session, presentation_id)
     rows = await sql_chat_history.load_messages_with_meta(
         sql_session,
         presentation_id=presentation_id,
@@ -82,6 +99,7 @@ async def chat_message(
     payload: ChatMessageRequest,
     sql_session: AsyncSession = Depends(get_async_session),
 ):
+    await _require_owned_presentation(sql_session, payload.presentation_id)
     service = PresentationChatService(
         sql_session=sql_session,
         presentation_id=payload.presentation_id,
@@ -101,6 +119,7 @@ async def chat_message_stream(
     payload: ChatMessageRequest,
     sql_session: AsyncSession = Depends(get_async_session),
 ):
+    await _require_owned_presentation(sql_session, payload.presentation_id)
     service = PresentationChatService(
         sql_session=sql_session,
         presentation_id=payload.presentation_id,

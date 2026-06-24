@@ -33,6 +33,7 @@ from utils.llm_calls.generate_presentation_outlines import (
     get_messages as get_outline_messages,
 )
 from utils.web_search import get_selected_web_search_provider, get_web_search_route
+from utils.molin_tenancy import require_owner
 
 OUTLINES_ROUTER = APIRouter(prefix="/outlines", tags=["Outlines"])
 LOGGER = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ async def get_outline(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     if not presentation.outlines:
         return PresentationOutlineModel(slides=[])
@@ -62,6 +64,7 @@ async def update_outline(
     presentation = await sql_session.get(PresentationModel, id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     presentation.outlines = outline.model_dump(mode="json")
     presentation.n_slides = len(outline.slides)
@@ -86,6 +89,7 @@ async def stream_outlines(
 
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    require_owner(presentation)  # 墨灵多租户（F-B）
 
     search_route, actual_search_provider = get_web_search_route()
     LOGGER.info(

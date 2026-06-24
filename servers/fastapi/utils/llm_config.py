@@ -69,6 +69,7 @@ from utils.get_env import (
 )
 from utils.available_models import normalize_openai_compatible_base_url
 from utils.llm_provider import get_llm_provider
+from utils.molin_context import get_molin_identity
 from utils.parsers import parse_bool_or_none
 from utils.set_env import (
     set_codex_access_token_env,
@@ -127,6 +128,22 @@ def _get_codex_access_token() -> str:
 
 
 def get_llm_config(*, use_openai_responses_api: bool = False) -> ClientConfig:
+    # 墨灵接入（F-A）：请求带本人身份与个人 key 时，强制走 token_gateway（OpenAI 兼容）
+    # 并用该用户的 key 计费，短路下方 provider 选择，确保烧的是该用户自己的 token。
+    # base_url 优先用注入头，缺省回退到实例级 CUSTOM_LLM_URL（全实例共享同一 token_gateway 入口）。
+    molin = get_molin_identity()
+    if molin and molin.llm_api_key:
+        base_url = molin.llm_base_url or get_custom_llm_url_env()
+        if not base_url:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Molin: token_gateway 入口未配置"
+                    "（设置 CUSTOM_LLM_URL 或注入 X-Molin-LLM-Base-Url）"
+                ),
+            )
+        return OpenAIClientConfig(base_url=base_url, api_key=molin.llm_api_key)
+
     llm_provider = get_llm_provider()
 
     match llm_provider:

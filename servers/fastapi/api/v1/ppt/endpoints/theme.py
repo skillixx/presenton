@@ -11,6 +11,7 @@ from models.sql.image_asset import ImageAsset
 from models.sql.key_value import KeyValueSqlModel
 from services.database import get_async_session
 from utils.asset_directory_utils import normalize_slide_asset_url
+from utils.molin_tenancy import require_owner
 
 THEMES_ROUTER = APIRouter(prefix="/themes", tags=["Themes"])
 THEMES_STORAGE_KEY = "presentation_custom_themes"
@@ -95,6 +96,7 @@ async def _resolve_logo_url(
     image_asset = await sql_session.get(ImageAsset, logo_uuid)
     if not image_asset:
         raise HTTPException(status_code=404, detail="Logo not found")
+    require_owner(image_asset)  # 墨灵多租户（F-B）：仅本人图片可用作 logo
     return normalize_slide_asset_url(image_asset.path)
 
 
