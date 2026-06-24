@@ -21,6 +21,7 @@ Starlette 的 ``BaseHTTPMiddleware`` 在独立的执行上下文里运行下游�
 才被接受，否则视作普通请求（身份为 None，回落原鉴权）——可防 presenton 万一可达时的伪造。
 """
 
+import hmac
 import os
 
 from utils.molin_context import (
@@ -48,7 +49,9 @@ def _trust_secret_ok(headers: dict) -> bool:
     expected = os.getenv("MOLIN_TRUST_SECRET")
     if not expected:
         return True
-    return _decode(headers.get(_HDR_SECRET)) == expected
+    provided = _decode(headers.get(_HDR_SECRET)) or ""
+    # 常量时间比较，防时序侧信道泄漏密钥。
+    return hmac.compare_digest(provided, expected)
 
 
 class MolinIdentityMiddleware:
