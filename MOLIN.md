@@ -27,6 +27,31 @@
 `asyncio.create_task` 子任务创建时自动复制 context，故异步生成链路无需额外透传。
 前提是注入用**纯 ASGI 中间件**（非 BaseHTTPMiddleware，后者会断 ContextVar 传播）。
 
-## F-B：多租户存储 + 记忆（加 user_id）—— 待开发
+## F-B：多租户存储 + 记忆（加 user_id）—— 已完成
+
+让每个墨灵用户只能访问自己的演示文稿 / 幻灯片 / 对话历史（记忆）/ 图片。
+隔离信任边界：**presentation 为数据根**（slide/chat 经 presentation_id 间接受保护），
+**image 独立加 user_id**（图片库原为全局共享，会泄漏他人上传的 logo）。
+
+| 文件 | 改动 |
+|---|---|
+| `models/sql/presentation.py` | **改**：加 `user_id`（可空，index）；`get_new_presentation` 复制归属 |
+| `models/sql/image_asset.py` | **改**：加 `user_id`（可空，index） |
+| `utils/molin_tenancy.py` | **新增**：`current_owner_id` / `stamp_owner`（创建盖章）/ `require_owner`（非本人→404，不泄漏存在性）；无身份时全 no-op |
+| `alembic/versions/b7c1a9d2e3f4_*.py` | **新增**：给 presentations + imageasset 加 user_id 列 + 索引（幂等） |
+| `api/v1/ppt/endpoints/presentation.py` | **改**：列表按 owner 过滤；create/generate/derive 盖章；get/delete/prepare/stream/update/edit 校验归属 |
+| `api/v1/ppt/endpoints/slide.py` | **改**：两处经父 presentation 校验归属 |
+| `api/v1/ppt/endpoints/outlines.py` | **改**：get/update/stream 三处校验归属 |
+| `api/v1/ppt/endpoints/chat.py` | **改**：对话历史 4 端点经 presentation 归属隔离（记忆隔离核心） |
+| `api/v1/ppt/endpoints/images.py` | **改**：generated/uploaded 列表按 owner 过滤；upload 盖章；delete 校验归属（并修 except 吞 404） |
+| `api/v1/ppt/endpoints/theme.py` | **改**：logo 图片校验归属 |
+| `services/image_generation_service.py` | **改**：生成图片盖章归属 |
+| `tests/unit/test_molin_tenancy.py` | **新增**：盖章/归属/无身份兼容，6 项全过 |
+
+**兼容性**：无墨灵身份（独立部署）时全部 no-op，保持 presenton 原行为；老数据 user_id=None
+对墨灵用户视作不可见（404）。
+
+**遗留**：slide/chat_history 表本身未加 user_id（经 presentation 间接隔离已足够）；如需
+防御纵深可后续补列。
 
 ## F-C：鉴权改信任墨灵 SSO —— 待开发

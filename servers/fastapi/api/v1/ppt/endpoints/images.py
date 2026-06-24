@@ -6,6 +6,7 @@ from sqlmodel import select
 from models.image_prompt import ImagePrompt
 from models.sql.image_asset import ImageAsset
 from services.database import get_async_session
+from utils.molin_tenancy import current_owner_id, require_owner, stamp_owner
 from services.image_generation_service import ImageGenerationService
 from utils.asset_directory_utils import (
     filesystem_image_path_to_app_data_url,
@@ -123,11 +124,15 @@ def _image_asset_api_dict(asset: ImageAsset) -> dict:
 @IMAGES_ROUTER.get("/generated")
 async def get_generated_images(sql_session: AsyncSession = Depends(get_async_session)):
     try:
-        images_result = await sql_session.scalars(
+        query = (
             select(ImageAsset)
             .where(ImageAsset.is_uploaded == False)
             .order_by(ImageAsset.created_at.desc())
         )
+        owner = current_owner_id()  # 墨灵多租户（F-B）：仅返回本人生成的图片
+        if owner is not None:
+            query = query.where(ImageAsset.user_id == owner)
+        images_result = await sql_session.scalars(query)
         return [_image_asset_api_dict(a) for a in images_result]
     except Exception as e:
         raise HTTPException(
@@ -149,6 +154,7 @@ async def upload_image(
             f.write(await file.read())
 
         image_asset = ImageAsset(path=image_path, is_uploaded=True)
+        stamp_owner(image_asset)  # 墨灵多租户（F-B）：上传图片盖章归属
 
         sql_session.add(image_asset)
         await sql_session.commit()
@@ -163,11 +169,15 @@ async def upload_image(
 @IMAGES_ROUTER.get("/uploaded")
 async def get_uploaded_images(sql_session: AsyncSession = Depends(get_async_session)):
     try:
-        images_result = await sql_session.scalars(
+        query = (
             select(ImageAsset)
             .where(ImageAsset.is_uploaded == True)
             .order_by(ImageAsset.created_at.desc())
         )
+        owner = current_owner_id()  # 墨灵多租户（F-B）：仅返回本人上传的图片
+        if owner is not None:
+            query = query.where(ImageAsset.user_id == owner)
+        images_result = await sql_session.scalars(query)
         return [_image_asset_api_dict(a) for a in images_result]
     except Exception as e:
         raise HTTPException(
@@ -184,11 +194,15 @@ async def delete_uploaded_image_by_id(
         image = await sql_session.get(ImageAsset, id)
         if not image:
             raise HTTPException(status_code=404, detail="Image not found")
+        require_owner(image)  # 墨灵多租户（F-B）：仅本人可删自己的图片
 
         os.remove(image.path)
 
         await sql_session.delete(image)
         await sql_session.commit()
 
+    except HTTPException:
+        # 让 404（不存在/非本人）等业务错误原样抛出，不被下方通用 500 吞掉。
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete image: {str(e)}")
