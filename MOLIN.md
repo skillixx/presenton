@@ -72,9 +72,24 @@ presenton 原为单管理员 session/basic 登录（`SessionAuthMiddleware`）�
 
 未配置 `MOLIN_TRUST_SECRET` 且无墨灵头时，保持 presenton 原单管理员登录行为。
 
+## F-D：用户选择模型（按请求取 model）—— 已完成
+
+presenton 原本模型来自全局 env（CUSTOM 走 `CUSTOM_MODEL`），全实例只能用一个模型。
+墨灵接入后，让用户在墨灵侧选模型，经请求头注入，presenton 按请求用该模型（墨灵 logical_model_code）。
+
+| 文件 | 改动 |
+|---|---|
+| `utils/molin_context.py` | **改**：`MolinIdentity` 加 `llm_model` |
+| `api/molin_middleware.py` | **改**：读 `X-Molin-LLM-Model` 头填充 `llm_model` |
+| `utils/llm_provider.py` | **改**：`get_model()` 顶部短路——请求带 `llm_model` 时优先用它，否则回退原 env 逻辑 |
+| `tests/unit/test_molin_auth.py` | **改**：加 model 头注入测试 |
+
+请求头：`X-Molin-LLM-Model`（墨灵 D2 反代从会话注入；缺省回退 `CUSTOM_MODEL` env，不改原行为）。
+
 ## 环境变量（墨灵接入新增）
 
 | 变量 | 说明 |
 |---|---|
 | `MOLIN_TRUST_SECRET` | BFF↔presenton 共享密钥（F-C 防伪造）。不设则仅靠网络隔离 |
 | `CUSTOM_LLM_URL` | token_gateway OpenAI 兼容入口（F-A base_url 缺省值） |
+| `CUSTOM_MODEL` | 默认模型（墨灵 logical_model_code）；F-D 注入头缺省时的回退值 |

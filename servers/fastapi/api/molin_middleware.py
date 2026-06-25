@@ -33,6 +33,7 @@ from utils.molin_context import (
 _HDR_USER = b"x-molin-user-id"
 _HDR_KEY = b"x-molin-llm-key"
 _HDR_BASE_URL = b"x-molin-llm-base-url"
+_HDR_MODEL = b"x-molin-llm-model"
 _HDR_SECRET = b"x-molin-auth-secret"
 
 
@@ -73,6 +74,7 @@ class MolinIdentityMiddleware:
                 user_id=_decode(user_id),
                 llm_api_key=_decode(headers.get(_HDR_KEY)),
                 llm_base_url=_decode(headers.get(_HDR_BASE_URL)),
+                llm_model=_decode(headers.get(_HDR_MODEL)),
             )
             token = set_molin_identity(identity)
 

@@ -34,6 +34,19 @@ def test_secret_not_configured_accepts(monkeypatch):
     assert identity is not None and identity.user_id == "u1"
 
 
+def test_model_header_populates_identity(monkeypatch):
+    # F-D：中间件应把 X-Molin-LLM-Model 读入 identity.llm_model
+    monkeypatch.delenv("MOLIN_TRUST_SECRET", raising=False)
+    identity = _identity_after_middleware(
+        [(b"x-molin-user-id", b"u1"), (b"x-molin-llm-model", b"DeepSeek")]
+    )
+    assert identity is not None and identity.llm_model == "DeepSeek"
+
+    # 不带 model 头时为 None（回退 CUSTOM_MODEL env，不影响原行为）
+    identity2 = _identity_after_middleware([(b"x-molin-user-id", b"u1")])
+    assert identity2 is not None and identity2.llm_model is None
+
+
 def test_secret_configured_requires_match(monkeypatch):
     monkeypatch.setenv("MOLIN_TRUST_SECRET", "s3cret")
 

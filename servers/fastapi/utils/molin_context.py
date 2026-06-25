@@ -27,6 +27,8 @@ class MolinIdentity:
     llm_api_key: Optional[str] = None
     # token_gateway 的 OpenAI 兼容入口（可选；缺省回退到 CUSTOM_LLM_URL 环境变量）。
     llm_base_url: Optional[str] = None
+    # 用户选择的模型（墨灵 logical_model_code；F-D）。缺省回退到 CUSTOM_MODEL 环境变量。
+    llm_model: Optional[str] = None
 
 
 _molin_identity: ContextVar[Optional[MolinIdentity]] = ContextVar(

@@ -20,6 +20,7 @@ from constants.llm import (
     SUPPORTED_CODEX_MODELS,
 )
 from enums.llm_provider import LLMProvider
+from utils.molin_context import get_molin_identity
 from utils.get_env import (
     get_azure_openai_deployment_env,
     get_azure_openai_model_env,
@@ -124,6 +125,12 @@ def is_lmstudio_selected():
 
 
 def get_model():
+    # 墨灵接入（F-D）：请求带用户所选模型时优先用它（墨灵 logical_model_code），
+    # 覆盖下方按 provider 取 env 的逻辑；缺省（无注入）则回退原行为。
+    molin = get_molin_identity()
+    if molin and molin.llm_model:
+        return molin.llm_model
+
     selected_llm = get_llm_provider()
     if selected_llm == LLMProvider.OPENAI:
         return get_openai_model_env() or DEFAULT_OPENAI_MODEL
